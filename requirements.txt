@@ -1,0 +1,17 @@
+numpy
+pandas
+pyarrow
+scipy
+scikit-learn
+openai
+tqdm
+pytest
+matplotlib
+catboost
+shap
+sentence-transformers
+torch
+pycodestyle
+pyright
+pandas-stubs
+pydantic
