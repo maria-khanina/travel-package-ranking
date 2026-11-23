@@ -1,5 +1,6 @@
 """Combines all utility components into the value of each package."""
 
+import numpy as np
 import pandas as pd
 
 from src.behavior.price_terms import compute_price_term
@@ -15,6 +16,14 @@ from src.world.helpers import read_floats, read_integers
 from src.world.models import FloatArray
 
 
+def compute_shock_term(rows: pd.DataFrame, settings: Settings) -> FloatArray:
+    """Adds the hidden demand shock of the confounded scenario, zero otherwise."""
+    confounder = settings.confounder
+    if not confounder.enabled:
+        return np.zeros(len(rows))
+    return confounder.utility_shift * read_floats(rows, confounder.shock_column)
+
+
 def compute_utilities(
     rows: pd.DataFrame,
     settings: Settings,
@@ -27,6 +36,7 @@ def compute_utilities(
     utility = utility + compute_flexibility_term(rows, settings)
     utility = utility + compute_flight_term(rows, settings)
     utility = utility + compute_price_term(rows, margin, settings.choice)
+    utility = utility + compute_shock_term(rows, settings)
     if include_noise:
         noise = read_floats(rows, "hid_eps_std")
         utility = utility + settings.choice.noise_sigma * noise

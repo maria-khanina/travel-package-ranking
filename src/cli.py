@@ -6,10 +6,11 @@ from collections.abc import Callable
 
 import pandas as pd
 
-from src.dataset import build_dataset, build_placeholder_texts, load_texts
-from src.features.build import build_feature_table, save_feature_table
+from configs.report_settings import EXPLAIN_TOP_ROWS, REPORT_DECIMALS
 from src.calibration.pipeline import run_calibration
+from src.dataset import build_dataset, build_placeholder_texts, load_texts
 from src.explain.pipeline import run_explanation
+from src.features.build import build_feature_table, save_feature_table
 from src.features.comparison import pivot_report, run_comparison
 from src.features.evaluation import evaluate_text_features
 from src.features.inputs import load_feature_inputs, load_truth_for_scores
@@ -37,11 +38,11 @@ from src.texts.jobs import build_text_jobs
 from src.texts.models import JOB_NAMES, TextBundle, TextJobs
 from src.texts.runner import JobRequest, run_job
 from src.world.builder import build_world
+from src.world.confounder import apply_confounder
 
 TEXT_SUFFIX = ".jsonl"
 TEXT_SCORES_FILE = "text_feature_scores.csv"
 TEXT_PREFIXES = ("sim_",)
-REPORT_DECIMALS = 4
 PLAIN_COMMANDS: list[str] = [
     "features",
     "bootstrap",
@@ -54,7 +55,6 @@ PLAIN_COMMANDS: list[str] = [
     "cold-report",
     "calibrate",
     "explain",
-    "margin",
 ]
 
 Handler = Callable[[argparse.Namespace, Settings], None]
@@ -85,17 +85,29 @@ def add_train_arguments(train: argparse.ArgumentParser) -> None:
     train.add_argument("--only", nargs="*", default=[])
 
 
+def add_margin_arguments(margin: argparse.ArgumentParser) -> None:
+    """Defines the arguments of the command that compares pricing policies."""
+    margin.add_argument("--experiment", default=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Defines all commands of the project."""
+    """Defines all commands of the project and the scenario switch."""
     parser = argparse.ArgumentParser(description="Synthetic travel dataset generator")
+    parser.add_argument("--confounded", action="store_true")
+    add_commands(parser)
+    return parser
+
+
+def add_commands(parser: argparse.ArgumentParser) -> None:
+    """Adds every command with its own arguments."""
     commands = parser.add_subparsers(dest="command", required=True)
     add_world_arguments(commands.add_parser("world"))
     add_texts_arguments(commands.add_parser("texts"))
     add_simulate_arguments(commands.add_parser("simulate"))
     add_train_arguments(commands.add_parser("train"))
+    add_margin_arguments(commands.add_parser("margin"))
     for name in PLAIN_COMMANDS:
         commands.add_parser(name)
-    return parser
 
 
 def run_world(arguments: argparse.Namespace, settings: Settings) -> None:
@@ -140,6 +152,8 @@ def select_texts(
 def run_simulate(arguments: argparse.Namespace, settings: Settings) -> None:
     """Simulates the bookings and writes the final dataset."""
     world, jobs = load_world(world_directory(settings))
+    if settings.confounder.enabled:
+        apply_confounder(world, settings)
     texts = select_texts(arguments, settings, jobs)
     bundle = build_dataset(world, texts, settings, None)
     save_dataset(bundle, dataset_directory(settings))
@@ -148,7 +162,9 @@ def run_simulate(arguments: argparse.Namespace, settings: Settings) -> None:
 
 def report_text_scores(table: pd.DataFrame, settings: Settings) -> None:
     """Scores the text features against the hidden fit and saves the result."""
-    names = [name for name in table.columns if name.startswith(TEXT_PREFIXES)]
+    names: list[str] = [
+        name for name in table.columns if name.startswith(TEXT_PREFIXES)
+    ]
     truth = load_truth_for_scores(dataset_directory(settings))
     scores = evaluate_text_features(table, truth, names)
     output = results_directory(settings)
@@ -241,13 +257,15 @@ def run_explain_command(arguments: argparse.Namespace, settings: Settings) -> No
     """Computes Shapley values and prints the importance of features and groups."""
     del arguments
     importance, groups = run_explanation(settings)
-    print(importance.head(25).round(REPORT_DECIMALS).to_string(index=False))
+    top = importance.head(EXPLAIN_TOP_ROWS)
+    print(top.round(REPORT_DECIMALS).to_string(index=False))
     print(groups.round(REPORT_DECIMALS).to_string(index=False))
 
 
 def run_margin_command(arguments: argparse.Namespace, settings: Settings) -> None:
     """Compares the pricing policies and prints their expected revenue."""
-    del arguments
+    if arguments.experiment is not None:
+        settings.modeling.margin.experiment = arguments.experiment
     table, paired = run_margin(settings)
     print(table.round(REPORT_DECIMALS).to_string(index=False))
     print(paired.round(REPORT_DECIMALS).to_string(index=False))
@@ -281,10 +299,19 @@ HANDLERS: dict[str, Handler] = {
 }
 
 
+def enable_confounder(settings: Settings) -> None:
+    """Switches to the hidden demand shock scenario and its own data folder."""
+    settings.confounder.enabled = True
+    settings.run.paths.data_dir = settings.confounder.data_folder
+
+
 def main() -> None:
     """Runs the command chosen on the command line."""
     arguments = build_parser().parse_args()
-    HANDLERS[arguments.command](arguments, load_settings())
+    settings = load_settings()
+    if arguments.confounded:
+        enable_confounder(settings)
+    HANDLERS[arguments.command](arguments, settings)
 
 
 if __name__ == "__main__":

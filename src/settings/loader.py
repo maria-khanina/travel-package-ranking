@@ -10,6 +10,7 @@ from configs.archetypes import ARCHETYPES
 from configs.catalogue import CATALOGUE, POOL, SEASONS
 from configs.choice import CHOICE
 from configs.comparison import COMPARISON
+from configs.confounder_settings import CONFOUNDER
 from configs.destinations import DESTINATIONS
 from configs.features import FEATURES
 from configs.hotel_types import HOTEL_TYPES
@@ -28,10 +29,10 @@ from configs.text_generation import TEXT
 from configs.text_styles import TEXT_STYLES
 from src.settings.amenity_models import AmenitySettings
 from src.settings.comparison_models import ComparisonSettings
+from src.settings.confounder_models import ConfounderSettings
 from src.settings.feature_models import FeatureSettings
 from src.settings.matching_models import MatchSettings
 from src.settings.modeling_models import ModelingSettings
-from src.settings.screening_models import ScreeningSettings
 from src.settings.models import (
     CatalogueSettings,
     ChoiceSettings,
@@ -54,6 +55,7 @@ from src.settings.records import (
     TextGenerationSettings,
     TextStyleSettings,
 )
+from src.settings.screening_models import ScreeningSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,6 +65,7 @@ class Settings(BaseModel):
     features: FeatureSettings
     amenities: AmenitySettings
     modeling: ModelingSettings
+    confounder: ConfounderSettings
     matching: MatchSettings
     comparison: ComparisonSettings
     screening: ScreeningSettings
@@ -85,13 +88,21 @@ class Settings(BaseModel):
     hotel_types: list[HotelTypeRecord]
 
 
+def build_modeling_settings() -> ModelingSettings:
+    """Copies the modeling settings and adds the propensity-weighted experiment."""
+    modeling = copy.deepcopy(MODELING)
+    modeling.experiments.append(copy.deepcopy(CONFOUNDER.weighted_experiment))
+    return modeling
+
+
 def load_settings() -> Settings:
     """Builds an independent copy of the full project configuration."""
     return Settings(
         run=copy.deepcopy(RUN),
         features=copy.deepcopy(FEATURES),
         amenities=copy.deepcopy(AMENITIES),
-        modeling=copy.deepcopy(MODELING),
+        modeling=build_modeling_settings(),
+        confounder=copy.deepcopy(CONFOUNDER),
         matching=copy.deepcopy(MATCHING),
         comparison=copy.deepcopy(COMPARISON),
         screening=copy.deepcopy(SCREENING),

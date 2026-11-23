@@ -1,8 +1,9 @@
 """Runs the cross-validated experiments of the booking model."""
 
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
 
+from catboost import Pool
 import numpy as np
 import pandas as pd
 
@@ -15,8 +16,8 @@ from src.modeling.evaluation import (
 from src.modeling.frames import build_frame
 from src.modeling.persistence import (
     experiment_models_folder,
-    save_fold_model,
     save_fit_diagnostics,
+    save_fold_model,
     save_manifest,
     save_scores,
 )
@@ -24,6 +25,7 @@ from src.modeling.ranking import random_ranking_metrics
 from src.modeling.split import SplitMasks
 from src.modeling.training import (
     POINTWISE,
+    BookingModel,
     build_pool,
     predict_scores,
     train_model,
@@ -46,6 +48,7 @@ class ModelInputs:
     hotels: pd.Series
     hidden_fit: FloatArray
     masks: SplitMasks
+    weights: FloatArray
 
 
 def keep_informative_groups(
@@ -80,19 +83,32 @@ def fold_masks(
     )
 
 
+def select_weights(
+    inputs: ModelInputs,
+    experiment: ExperimentRecord,
+    settings: Settings,
+) -> FloatArray | None:
+    """Gives the propensity weights to the weighted experiment, none to others."""
+    if experiment.name != settings.confounder.weighted_experiment.name:
+        return None
+    return inputs.weights
+
+
 def build_fold_pools(
     frame: pd.DataFrame,
     categorical: list[str],
     inputs: ModelInputs,
     masks: tuple[BoolArray, BoolArray],
-    loss: str,
-) -> list[object]:
+    context: tuple[str, FloatArray | None],
+) -> list[Pool]:
     """Builds the training pool and the early-stopping pool of a fold."""
-    pools: list[object] = []
+    loss, weights = context
+    pools: list[Pool] = []
     for mask in masks:
         labels = inputs.labels[mask]
         groups = inputs.sessions[mask]
-        pools.append(build_pool(frame[mask], labels, categorical, groups, loss))
+        rows = None if weights is None else weights[mask]
+        pools.append(build_pool(frame[mask], labels, categorical, groups, loss, rows))
     return pools
 
 
@@ -103,18 +119,19 @@ def fit_fold(
     experiment: ExperimentRecord,
     fold: int,
     settings: Settings,
-) -> tuple[FloatArray, BoolArray, Any]:
+) -> tuple[FloatArray, BoolArray, BookingModel]:
     """Trains on some folds and scores the held-out fold."""
     loss = experiment.loss
     train, stopping, evaluation = fold_masks(fold, inputs, settings, loss)
-    pools = build_fold_pools(frame, categorical, inputs, (train, stopping), loss)
+    context = (loss, select_weights(inputs, experiment, settings))
+    pools = build_fold_pools(frame, categorical, inputs, (train, stopping), context)
     model = train_model(pools[0], pools[1], settings.modeling.catboost, loss)
-    scores = predict_scores(model, frame[evaluation], categorical, loss)
+    scores = predict_scores(model, frame[evaluation], categorical)
     return scores, evaluation, model
 
 
 def diagnose_fold(
-    model: Any,
+    model: BookingModel,
     frame: pd.DataFrame,
     categorical: list[str],
     inputs: ModelInputs,
@@ -127,9 +144,7 @@ def diagnose_fold(
     sample = np.flatnonzero(train)[: settings.modeling.diagnostic_rows]
     quality: dict[str, float] = {"fold": float(fold)}
     for name, rows in (("train", sample), ("stopping", np.flatnonzero(stopping))):
-        predicted = predict_scores(
-            model, frame.iloc[rows], categorical, experiment.loss
-        )
+        predicted = predict_scores(model, frame.iloc[rows], categorical)
         quality[f"{name}_auc"] = safe_auc(inputs.labels[rows], predicted)
     quality["evaluation_auc"] = safe_auc(inputs.labels[evaluation], scores)
     quality["best_iteration"] = float(model.get_best_iteration() or 0)
@@ -145,10 +160,22 @@ def cross_validate(
     frame, categorical = build_frame(
         inputs.table, inputs.hotels, settings.features.columns, experiment
     )
-    scores = np.full(len(inputs.labels), np.nan)
-    diagnostics: list[dict[str, float]] = []
     folder = experiment_models_folder(settings, experiment.name)
     save_manifest(folder, list(frame.columns), categorical, experiment.loss)
+    return run_folds((frame, categorical), inputs, experiment, folder, settings)
+
+
+def run_folds(
+    model_frame: tuple[pd.DataFrame, list[str]],
+    inputs: ModelInputs,
+    experiment: ExperimentRecord,
+    folder: Path,
+    settings: Settings,
+) -> tuple[FloatArray, list[dict[str, float]]]:
+    """Trains, scores, diagnoses and saves the model of every fold."""
+    frame, categorical = model_frame
+    scores = np.full(len(inputs.labels), np.nan)
+    diagnostics: list[dict[str, float]] = []
     for fold in range(settings.modeling.split.fold_count):
         fold_scores, evaluation, model = fit_fold(
             frame, categorical, inputs, experiment, fold, settings
@@ -228,7 +255,7 @@ def run_experiment(
     scores, diagnostics = cross_validate(experiment, inputs, settings)
     save_scores(settings, experiment.name, scores)
     save_fit_diagnostics(settings, experiment.name, diagnostics)
-    iterations = [fold["best_iteration"] for fold in diagnostics]
+    iterations: list[float] = [fold["best_iteration"] for fold in diagnostics]
     row = summarize_scores(experiment.name, scores, inputs, settings, iterations)
     attach_log_loss(row, scores, inputs, experiment.loss)
     development = inputs.masks.development
