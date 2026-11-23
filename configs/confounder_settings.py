@@ -13,8 +13,8 @@ from src.settings.confounder_models import ConfounderSettings
 CONFOUNDER = ConfounderSettings(
     enabled=False,
     shock_share=0.2,
-    utility_shift=1.0,
-    margin_shift=0.05,
+    utility_shift=2.0,
+    margin_shift=0.08,
     seed=97,
     data_folder="data_confounded",
     shock_column="hid_demand_shock",

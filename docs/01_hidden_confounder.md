@@ -7,8 +7,9 @@ The historical pricing rule raises margins when a hidden demand shock is present
 (for example, a local event the pricing team knew about); the shock also makes
 travelers book more. A model trained on these logs mistakes the shock for a weak
 price effect, so its margin policy overprices. Training with the logged margin
-propensities removes the bias, and inverse propensity scoring (IPS) on the logs
-gives an independent check before launch.
+propensities removes the bias. Inverse propensity scoring (IPS) on the logs was
+planned as an independent check before launch, but turned out to be unreliable
+(see Outcome).
 
 ## Finding that comes first: why IPS disagreed with the truth
 
@@ -24,12 +25,16 @@ data with policies that keep all 30 packages and change only margins:
 | one margin of 20% | 168.7 | 164.0 | 160.3 ± 16.1 |
 | margin per package optimized by the model | 174.0 | 178.7 | 172.5 ± 17.6 |
 
-Fix: the margin step also reports policies that reprice all candidates (where IPS is
-valid), and leaves IPS empty for slate policies, with the reason in the README.
+Fix: the margin step also reports policies that reprice all candidates, and leaves
+IPS empty for slate policies, with the reason in the README. Keeping all 30
+candidates removes the change of the choice set, but not the dependence of one
+package's booking on the prices of its competitors (hypothesis: interference), so
+IPS of all-candidate policies is not guaranteed to be unbiased either; in the
+confounded scenario it missed the truth at single margins of 10% and 20%.
 
 ## Design
 
-1. **Settings** `configs/confounder.py`: share of (session, destination) pairs with
+1. **Settings** `configs/confounder_settings.py`: share of (session, destination) pairs with
    a shock, utility shift of the shock, margin shift of the logging rule, seed,
    data directory of the scenario (`data_confounded/`, git-ignored).
 2. **Scenario** (`src/world/confounder.py`), applied in `simulate` when the global
@@ -70,6 +75,20 @@ machine time is about 20 minutes.
   scenarios, and flags the unweighted model's estimate as too high.
 - New tests: the shock changes only rows where it is drawn, the redrawn propensities
   sum to one per row, the weights have mean about one.
+
+## Outcome
+
+- With utility shift 1.0 and margin shift 0.05, weighting halved the price-response
+  error, but the unweighted model's profit forecast was not too high and the profit
+  did not change. The shock was raised to utility shift 2.0 and margin shift 0.08.
+- With the stronger shock all model criteria are met: the unweighted model
+  overpredicts booking at 25% by 41% and overstates its optimized profit by 18%
+  (216.9 against a true 183.1); the weighted model is within 3% (189.2 against 187.4)
+  and earns more, though the intervals of the two overlap.
+- The IPS criterion is not met: its intervals are about ±25 around 180, it missed
+  the truth at a single margin of 10% in the strong scenario (and at 10% and 20% in
+  the weak one), so it cannot flag the unweighted forecast. Numbers are in the
+  README.
 
 ## Out of scope
 
