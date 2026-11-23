@@ -43,17 +43,27 @@ def compute_margin_probabilities(
     return (1 - logging.mix_uniform) * focused + logging.mix_uniform / len(grid)
 
 
+def draw_logged_margins(
+    random_generator: np.random.Generator,
+    rows: pd.DataFrame,
+    target: FloatArray,
+    settings: Settings,
+) -> None:
+    """Draws the logged margin around a target and records its propensity."""
+    grid = np.array(settings.run.margin_grid)
+    logging = settings.pricing.logging_policy
+    probabilities = compute_margin_probabilities(target, grid, logging)
+    picked = sample_categorical(random_generator, probabilities)
+    rows["margin_percentage"] = grid[picked]
+    rows["margin_propensity"] = probabilities[np.arange(len(picked)), picked]
+
+
 def assign_margins(
     random_generator: np.random.Generator,
     rows: pd.DataFrame,
     price_level: FloatArray,
     settings: Settings,
 ) -> None:
-    """Draws the logged margin and records the chance it was drawn with."""
-    grid = np.array(settings.run.margin_grid)
+    """Draws the logged margin of the historical pricing rule for every row."""
     target = compute_target_margin(rows, price_level, settings)
-    logging = settings.pricing.logging_policy
-    probabilities = compute_margin_probabilities(target, grid, logging)
-    picked = sample_categorical(random_generator, probabilities)
-    rows["margin_percentage"] = grid[picked]
-    rows["margin_propensity"] = probabilities[np.arange(len(picked)), picked]
+    draw_logged_margins(random_generator, rows, target, settings)

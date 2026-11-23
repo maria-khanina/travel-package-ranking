@@ -16,6 +16,7 @@ from src.modeling.experiments import (
     run_experiment,
 )
 from src.modeling.split import SplitMasks, build_masks
+from src.modeling.weights import compute_propensity_weights
 from src.settings.loader import Settings
 from src.storage import (
     DATASET_FILE,
@@ -25,7 +26,7 @@ from src.storage import (
     results_directory,
 )
 from src.world.helpers import read_floats, read_integers
-from src.world.models import FloatArray
+from src.world.models import BoolArray, FloatArray
 
 EXPERIMENT_FOLDER = "experiments"
 SPLIT_FILE = "split_summary.csv"
@@ -35,6 +36,8 @@ PAIRED_FILE = "bootstrap_paired.csv"
 RANKS_SUFFIX = "_ranks.npy"
 ROW_SUFFIX = "_row.csv"
 HIDDEN_FIT = "hid_fit"
+MARGIN_COLUMN = "margin_percentage"
+PROPENSITY_COLUMN = "margin_propensity"
 
 
 def describe_split(
@@ -43,7 +46,10 @@ def describe_split(
     label_column: str,
 ) -> pd.DataFrame:
     """Counts the rows, sessions and bookings in every part of the split."""
-    parts = {"development": masks.development, "test": masks.test}
+    parts: dict[str, BoolArray] = {
+        "development": masks.development,
+        "test": masks.test,
+    }
     rows: list[dict[str, float | str]] = []
     for name, mask in parts.items():
         part = dataset[mask]
@@ -63,8 +69,14 @@ def read_tables(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     """Reads the needed columns of the dataset, the truth and the features."""
     modeling = settings.modeling
     directory = dataset_directory(settings)
-    columns = ["session_id", modeling.hotel_column, modeling.label_column]
-    truth_columns = [HIDDEN_FIT, modeling.register_column]
+    columns: list[str] = [
+        "session_id",
+        modeling.hotel_column,
+        modeling.label_column,
+        MARGIN_COLUMN,
+        PROPENSITY_COLUMN,
+    ]
+    truth_columns: list[str] = [HIDDEN_FIT, modeling.register_column]
     return (
         pd.read_parquet(directory / DATASET_FILE, columns=columns),
         pd.read_parquet(directory / TRUTH_FILE, columns=truth_columns),
@@ -88,7 +100,7 @@ def save_split_summary(
 def load_split_masks(settings: Settings) -> SplitMasks:
     """Rebuilds the row masks of the split from the saved dataset."""
     modeling = settings.modeling
-    columns = ["session_id", modeling.hotel_column, modeling.label_column]
+    columns: list[str] = ["session_id", modeling.hotel_column, modeling.label_column]
     directory = dataset_directory(settings)
     dataset = pd.read_parquet(directory / DATASET_FILE, columns=columns)
     truth = pd.read_parquet(directory / TRUTH_FILE, columns=[modeling.register_column])
@@ -120,6 +132,10 @@ def load_inputs(settings: Settings) -> ModelInputs:
         hotels=dataset[modeling.hotel_column],
         hidden_fit=read_floats(truth, HIDDEN_FIT),
         masks=masks,
+        weights=compute_propensity_weights(
+            read_floats(dataset, MARGIN_COLUMN),
+            read_floats(dataset, PROPENSITY_COLUMN),
+        ),
     )
 
 
@@ -184,7 +200,9 @@ def run_cross_validation(settings: Settings, only: list[str]) -> pd.DataFrame:
 def collect_results(settings: Settings) -> pd.DataFrame:
     """Gathers the saved metrics of all experiments into one table."""
     folder = experiment_folder(settings)
-    frames = [pd.read_csv(path) for path in sorted(folder.glob(f"*{ROW_SUFFIX}"))]
+    frames: list[pd.DataFrame] = [
+        pd.read_csv(path) for path in sorted(folder.glob(f"*{ROW_SUFFIX}"))
+    ]
     results = pd.concat(frames, ignore_index=True)
     results.to_csv(results_directory(settings) / CROSS_VALIDATION_FILE, index=False)
     return results

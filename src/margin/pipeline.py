@@ -1,5 +1,8 @@
 """Compares pricing policies by their estimated and true expected revenue."""
 
+from dataclasses import dataclass
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -26,17 +29,31 @@ from src.margin.policies import (
     random_policy,
 )
 from src.margin.predict import predict_grid
+from src.margin.reports import (
+    Estimates,
+    choices_table,
+    paired_summary,
+    response_tables,
+    summarize,
+)
+from src.margin.repricing import repricing_policies
 from src.margin.sample import MarginSample, load_margin_sample
 from src.margin.truth_tables import TrueTables, build_true_tables
-from src.modeling.truth_metrics import difference_parts, ratio_interval
 from src.settings.loader import Settings
 from src.storage import results_directory
 from src.world.helpers import read_floats
 from src.world.models import FloatArray
 
-Estimates = dict[str, dict[str, FloatArray]]
-LOGGED_MARGIN_POLICIES: list[str] = [RANDOM, CONVERSION, PROFIT]
+MARGIN_FOLDER = "margin"
 CHOICE_FILE = "margin_choices.csv"
+
+
+@dataclass
+class MarginRun:
+    sample: MarginSample
+    probability: FloatArray
+    tables: TrueTables
+    data: LoggedData
 
 
 def logged_data(sample: MarginSample, tables: TrueTables, pool: int) -> LoggedData:
@@ -55,7 +72,7 @@ def fixed_policies(
     data: LoggedData,
     settings: Settings,
 ) -> dict[str, Policy]:
-    """Builds the policies that charge one margin to every package."""
+    """Builds the slate policies that charge one margin to every package."""
     grid = settings.run.margin_grid
     size = settings.modeling.margin.slate_size
     profit = profit_grid(data.net_cost, grid)
@@ -68,188 +85,110 @@ def fixed_policies(
     return policies
 
 
-def build_policies(
-    probability: FloatArray,
-    tables: TrueTables,
-    data: LoggedData,
-    settings: Settings,
-) -> dict[str, Policy]:
-    """Builds every compared policy from model probabilities."""
+def slate_policies(run: MarginRun, settings: Settings) -> dict[str, Policy]:
+    """Builds the policies that show a short slate of packages."""
     options = settings.modeling.margin
     grid = settings.run.margin_grid
     size = options.slate_size
     generator = np.random.default_rng(options.seed)
-    shown = logged_probability(probability, data.logged_index)
+    data = run.data
+    shown = logged_probability(run.probability, data.logged_index)
     profit = data.net_cost * np.array(grid)[data.logged_index]
     conversion = logged_margin_policy(shown, data.logged_index, size)
-    single = tables.single_probability
-    policies = {
+    single = run.tables.single_probability
+    return {
         RANDOM: random_policy(data.logged_index, size, generator),
         CONVERSION: conversion,
         PROFIT: logged_margin_policy(shown * profit, data.logged_index, size),
         MARGIN_ONLY: optimized_margins_policy(
-            probability, data.net_cost, grid, conversion.slate
+            run.probability, data.net_cost, grid, conversion.slate
         ),
-        OPTIMIZED: optimized_policy(probability, data.net_cost, grid, size),
+        OPTIMIZED: optimized_policy(run.probability, data.net_cost, grid, size),
         LAB_ORACLE: optimized_policy(single, data.net_cost, grid, size),
     }
-    if options.fixed_margin_policies:
-        policies.update(fixed_policies(probability, data, settings))
-    return policies
+
+
+def build_policies(
+    run: MarginRun,
+    settings: Settings,
+) -> tuple[dict[str, Policy], list[str]]:
+    """Builds every policy and names those the logs can grade."""
+    policies = slate_policies(run, settings)
+    if settings.modeling.margin.fixed_margin_policies:
+        policies.update(fixed_policies(run.probability, run.data, settings))
+    grid = settings.run.margin_grid
+    repricing = repricing_policies(run.probability, run.data.net_cost, grid)
+    policies.update(repricing)
+    return policies, list(repricing)
+
+
+def estimate_policy(
+    policy: Policy,
+    graded_by_logs: bool,
+    run: MarginRun,
+    settings: Settings,
+) -> dict[str, FloatArray]:
+    """Computes the true, the model and, where valid, the logged revenue."""
+    true = true_estimate(run.tables, run.data, policy, settings)
+    logged = np.full(len(true), np.nan)
+    if graded_by_logs:
+        logged = logged_estimate(run.data, policy, settings)
+    model = model_estimate(run.probability, run.data, policy, settings)
+    return {"true": true, "model": model, "logged": logged}
 
 
 def estimate_all(
     policies: dict[str, Policy],
-    probability: FloatArray,
-    tables: TrueTables,
-    data: LoggedData,
+    logged_names: list[str],
+    run: MarginRun,
     settings: Settings,
 ) -> Estimates:
-    """Computes the three revenue estimates per session for every policy."""
+    """Computes the revenue estimates per session for every policy."""
     estimates: Estimates = {}
     for name, policy in policies.items():
-        weighted = logged_estimate(data, policy, settings)
-        if name in LOGGED_MARGIN_POLICIES:
-            weighted = np.full(len(weighted), np.nan)
-        estimates[name] = {
-            "true": true_estimate(tables, data, policy, settings),
-            "model": model_estimate(probability, data, policy, settings),
-            "logged": weighted,
-        }
+        graded_by_logs = name in logged_names
+        estimates[name] = estimate_policy(policy, graded_by_logs, run, settings)
     return estimates
 
 
-def summarize(estimates: Estimates, settings: Settings) -> pd.DataFrame:
-    """Reports the mean revenue per session of every estimate with intervals."""
-    bootstrap = settings.modeling.bootstrap
-    rows: list[dict[str, float | str]] = []
-    for name, kinds in estimates.items():
-        row: dict[str, float | str] = {"policy": name}
-        for kind, values in kinds.items():
-            if np.isnan(values).any():
-                missing = {kind: np.nan, f"{kind}_lower": np.nan}
-                row.update(missing | {f"{kind}_upper": np.nan})
-                continue
-            ones = np.ones(len(values))
-            mean, low, high = ratio_interval((values, ones), bootstrap)
-            row.update({kind: mean, f"{kind}_lower": low, f"{kind}_upper": high})
-        rows.append(row)
-    return pd.DataFrame(rows)
+def prepare_run(settings: Settings) -> MarginRun:
+    """Loads the sample, predicts every margin and builds the true tables."""
+    sample = load_margin_sample(settings)
+    probability = predict_grid(sample, settings)
+    tables = build_true_tables(sample, settings)
+    data = logged_data(sample, tables, settings.pool.size)
+    return MarginRun(sample, probability, tables, data)
 
 
-def paired_summary(
-    estimates: Estimates,
-    baselines: list[str],
-    settings: Settings,
-) -> pd.DataFrame:
-    """Compares every policy with the baselines on the same resampled sessions."""
-    bootstrap = settings.modeling.bootstrap
-    rows: list[dict[str, float | str]] = []
-    for baseline in baselines:
-        for name, kinds in estimates.items():
-            ones = np.ones(len(kinds["true"]))
-            parts = difference_parts(
-                (kinds["true"], ones), (estimates[baseline]["true"], ones)
-            )
-            mean, low, high = ratio_interval(parts, bootstrap)
-            rows.append(
-                {
-                    "baseline": baseline,
-                    "policy": name,
-                    "difference": mean,
-                    "lower": low,
-                    "upper": high,
-                }
-            )
-    return pd.DataFrame(rows)
+def margin_output_folder(settings: Settings) -> Path:
+    """Returns the folder for the margin results of the evaluated model."""
+    experiment = settings.modeling.margin.experiment
+    folder = results_directory(settings) / MARGIN_FOLDER / experiment
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
-def price_ratio_at(
-    sample: MarginSample,
-    margin: float,
-    pool: int,
-) -> FloatArray:
-    """Computes the price relative to competitors at a given margin."""
-    net_cost = read_floats(sample.rows, "net_cost").reshape(-1, pool)
-    competitor = read_floats(sample.rows, "competitor_retail_price")
-    return net_cost * (1.0 + margin) / competitor.reshape(-1, pool)
-
-
-def price_bins(
-    ratio: FloatArray,
-    predicted: FloatArray,
-    true: FloatArray,
-    margin: float,
-    count: int,
-) -> list[dict[str, float]]:
-    """Compares predicted and true probabilities in bins of relative price."""
-    edges = np.quantile(ratio, np.linspace(0.0, 1.0, count + 1))
-    index = np.searchsorted(edges[1:-1], ratio, side="right")
-    rows: list[dict[str, float]] = []
-    for number in range(count):
-        chosen = index == number
-        rows.append(
-            {
-                "margin": margin,
-                "bin": float(number),
-                "mean_price_ratio": float(ratio[chosen].mean()),
-                "mean_predicted": float(predicted[chosen].mean()),
-                "mean_true": float(true[chosen].mean()),
-            }
-        )
-    return rows
-
-
-def response_tables(
-    probability: FloatArray,
-    tables: TrueTables,
-    sample: MarginSample,
-    settings: Settings,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Compares the predicted and the true price response at every margin."""
-    count = settings.modeling.margin.bins
-    totals: list[dict[str, float]] = []
-    bins: list[dict[str, float]] = []
-    for position, margin in enumerate(settings.run.margin_grid):
-        predicted = probability[:, :, position]
-        true = tables.single_probability[:, :, position]
-        ratio = price_ratio_at(sample, margin, settings.pool.size)
-        totals.append(
-            {
-                "margin": margin,
-                "mean_predicted": float(predicted.mean()),
-                "mean_true": float(true.mean()),
-                "mean_price_ratio": float(ratio.mean()),
-            }
-        )
-        bins += price_bins(ratio, predicted, true, margin, count)
-    return pd.DataFrame(totals), pd.DataFrame(bins)
-
-
-def choices_table(policy: Policy, settings: Settings) -> pd.DataFrame:
-    """Counts how often each margin of the grid is chosen by a policy."""
-    grid = settings.run.margin_grid
-    counts = np.bincount(policy.margin_index.reshape(-1), minlength=len(grid))
-    return pd.DataFrame({"margin": grid, "share": counts / counts.sum()})
+def save_tables(tables: dict[str, pd.DataFrame], folder: Path) -> None:
+    """Writes every report table under its file name."""
+    for name, table in tables.items():
+        table.to_csv(folder / name, index=False)
 
 
 def run_margin(settings: Settings) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Builds policies, estimates their revenue and saves the comparison."""
     options = settings.modeling.margin
-    sample = load_margin_sample(settings)
-    probability = predict_grid(sample, settings)
-    tables = build_true_tables(sample, settings)
-    data = logged_data(sample, tables, settings.pool.size)
-    policies = build_policies(probability, tables, data, settings)
-    estimates = estimate_all(policies, probability, tables, data, settings)
+    run = prepare_run(settings)
+    policies, logged_names = build_policies(run, settings)
+    estimates = estimate_all(policies, logged_names, run, settings)
     table = summarize(estimates, settings)
     paired = paired_summary(estimates, [RANDOM, PROFIT], settings)
-    totals, bins = response_tables(probability, tables, sample, settings)
-    output = results_directory(settings)
-    choices = choices_table(policies[OPTIMIZED], settings)
-    choices.to_csv(output / CHOICE_FILE, index=False)
-    table.to_csv(output / options.policy_file, index=False)
-    paired.to_csv(output / options.paired_file, index=False)
-    totals.to_csv(output / options.response_file, index=False)
-    bins.to_csv(output / options.response_price_file, index=False)
+    totals, bins = response_tables(run.probability, run.tables, run.sample, settings)
+    reports: dict[str, pd.DataFrame] = {
+        options.policy_file: table,
+        options.paired_file: paired,
+        options.response_file: totals,
+        options.response_price_file: bins,
+        CHOICE_FILE: choices_table(policies[OPTIMIZED], settings),
+    }
+    save_tables(reports, margin_output_folder(settings))
     return table, paired
