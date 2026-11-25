@@ -20,9 +20,11 @@ them.
 ## Step 0. Tests and settings
 
 - **Goal:** the specification as tests, and the settings the code will read.
-- **Files:** `tests/test_ab_test.py`, `configs/ab_test.py`,
-  `src/settings/ab_test_models.py`, `src/settings/loader.py` (new field `ab_test`),
-  empty `src/ab_test/__init__.py`.
+- **Files:** `tests/test_ab_test.py`, `tests/ab_test_check_settings.py` (inputs and
+  tolerances), `configs/ab_test_settings.py`, `src/settings/ab_test_models.py`,
+  `src/settings/loader.py` (new field `ab_test`), and the modules of `src/ab_test/`
+  with the interfaces above whose bodies raise `NotImplementedError`, so that the
+  tests type-check and fail only on the missing implementation.
 - **Tests (synthetic data with known answers):**
   - assignment: exact half treated, different seeds give different splits;
   - outcomes: a dominant package is always booked, a dominant outside option books

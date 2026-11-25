@@ -2,7 +2,10 @@
 
 ## Step 0. Tests and settings
 
-Not started.
+Done 2026-11-25. 18 tests in `tests/test_ab_test.py`; all fail with
+`NotImplementedError` from the interface stubs; the other 61 tests pass.
+pycodestyle and strict pyright are clean on the new and changed files (pyright
+reports 3 errors in `src/labels/`, which this step did not touch).
 
 ## Step 1. Baseline: one run of each test
 

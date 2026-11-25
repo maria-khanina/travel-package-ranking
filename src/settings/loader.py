@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from configs.ab_test_settings import AB_TEST
 from configs.amenities import AMENITIES
 from configs.archetypes import ARCHETYPES
 from configs.catalogue import CATALOGUE, POOL, SEASONS
@@ -27,6 +28,7 @@ from configs.screening import SCREENING
 from configs.sessions import SESSIONS
 from configs.text_generation import TEXT
 from configs.text_styles import TEXT_STYLES
+from src.settings.ab_test_models import AbTestSettings
 from src.settings.amenity_models import AmenitySettings
 from src.settings.comparison_models import ComparisonSettings
 from src.settings.confounder_models import ConfounderSettings
@@ -66,6 +68,7 @@ class Settings(BaseModel):
     amenities: AmenitySettings
     modeling: ModelingSettings
     confounder: ConfounderSettings
+    ab_test: AbTestSettings
     matching: MatchSettings
     comparison: ComparisonSettings
     screening: ScreeningSettings
@@ -103,6 +106,7 @@ def load_settings() -> Settings:
         amenities=copy.deepcopy(AMENITIES),
         modeling=build_modeling_settings(),
         confounder=copy.deepcopy(CONFOUNDER),
+        ab_test=copy.deepcopy(AB_TEST),
         matching=copy.deepcopy(MATCHING),
         comparison=copy.deepcopy(COMPARISON),
         screening=copy.deepcopy(SCREENING),
