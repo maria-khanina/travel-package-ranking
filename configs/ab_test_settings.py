@@ -37,6 +37,7 @@ AB_TEST = AbTestSettings(
         children_column="n_children",
         family_label="with children",
         adults_label="adults only",
+        minimum_sessions=100,
     ),
     results_folder="ab_test",
     comparison_file="ab_test_comparison.csv",

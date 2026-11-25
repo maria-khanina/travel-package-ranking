@@ -5,6 +5,7 @@ from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
+import pytest
 from tests.ab_test_check_settings import (
     ALPHA,
     ARM_SESSIONS,
@@ -18,6 +19,7 @@ from tests.ab_test_check_settings import (
     CUPED_SLOPE,
     DOMINANCE_SESSIONS,
     DOMINANT_UTILITY,
+    ESTIMABLE_SEGMENT,
     EXPECTED_COVERAGE,
     EXPECTED_REJECTION,
     EXPECTED_SESSIONS,
@@ -28,6 +30,7 @@ from tests.ab_test_check_settings import (
     FREQUENCY_UTILITY,
     LOWER_BOUNDS,
     MINIMUM_REDUCTION,
+    MINIMUM_SEGMENT_SESSIONS,
     NEGLIGIBLE_UTILITY,
     NORMAL_SHIFT,
     ODD_SESSION_COUNT,
@@ -41,13 +44,16 @@ from tests.ab_test_check_settings import (
     SEGMENT_METRIC,
     SEGMENT_TREATED,
     SHOWN_PROFIT,
+    SINGLE_SESSION,
     SIZE_GROWTH,
+    SMALL_SEGMENT,
     THETA_TOLERANCE,
     TREATMENT_VALUES,
     TRUE_EFFECT,
     UNIT_DEVIATION,
     UNIT_EFFECT,
     UPPER_BOUNDS,
+    ZERO_CONTROL,
 )
 
 from src.ab_test.analysis import ArmComparison, compare_arms, cuped_adjust
@@ -136,7 +142,7 @@ def segment_table() -> pd.DataFrame:
     metric = np.array(SEGMENT_METRIC)
     treated = np.array(SEGMENT_TREATED)
     labels = np.array(SEGMENT_LABELS, dtype=np.object_)
-    return segment_effects(metric, treated, labels, ALPHA)
+    return segment_effects(metric, treated, labels, ALPHA, MINIMUM_SEGMENT_SESSIONS)
 
 
 def segment_value(table: pd.DataFrame, segment: str, column: str) -> float:
@@ -273,17 +279,36 @@ def test_intervals_cover_the_true_shift() -> None:
     assert abs(coverage - CONFIDENCE) < RATE_TOLERANCE
 
 
-def test_segment_differences_match_hand_computation() -> None:
+def test_segment_difference_matches_hand_computation() -> None:
     table = segment_table()
     metric = np.array(SEGMENT_METRIC)
     treated = np.array(SEGMENT_TREATED, dtype=np.float64)
     labels = np.array(SEGMENT_LABELS, dtype=np.object_)
-    for segment in set(SEGMENT_LABELS):
-        inside = (labels == segment).astype(np.float64)
-        difference = hand_difference(metric, treated, inside)
-        assert close(segment_value(table, segment, "difference"), difference)
-        lower = segment_value(table, segment, "lower")
-        assert lower < difference < segment_value(table, segment, "upper")
+    inside = (labels == ESTIMABLE_SEGMENT).astype(np.float64)
+    difference = hand_difference(metric, treated, inside)
+    assert close(segment_value(table, ESTIMABLE_SEGMENT, "difference"), difference)
+    lower = segment_value(table, ESTIMABLE_SEGMENT, "lower")
+    assert lower < difference < segment_value(table, ESTIMABLE_SEGMENT, "upper")
+
+
+def test_small_segment_is_reported_without_estimates() -> None:
+    table = segment_table()
+    sessions = SEGMENT_LABELS.count(SMALL_SEGMENT)
+    assert int(segment_value(table, SMALL_SEGMENT, "sessions")) == sessions
+    for column in ["difference", "lower", "upper", "p_value"]:
+        assert math.isnan(segment_value(table, SMALL_SEGMENT, column))
+
+
+def test_arm_of_one_session_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        compare_arms(np.array(SINGLE_SESSION), np.array(CONTROL_VALUES), ALPHA)
+
+
+def test_relative_lift_is_undefined_for_a_zero_control_mean() -> None:
+    comparison = compare_arms(np.array(ZERO_CONTROL), np.array(CONTROL_VALUES), ALPHA)
+    assert close(comparison.difference, float(np.mean(CONTROL_VALUES)))
+    assert math.isnan(comparison.relative_lift)
+    assert comparison.lower < comparison.difference < comparison.upper
 
 
 def test_segment_sizes_add_up_to_the_total() -> None:

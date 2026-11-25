@@ -76,6 +76,13 @@ interference between sessions, the confounded scenario, novelty effects over tim
 - **Segments.** The same difference and interval within each segment: device
   (iOS, Android, Desktop) and party (with children or adults only). The segment
   intervals are reported without a multiple-testing claim; a note says so.
+- **Degenerate cases** (added 2026-11-25). An arm with fewer than 2 sessions has no
+  variance estimate, so the comparison of two arms raises an error instead of
+  returning a silent NaN: in the main test it can only be a bug of the caller. A
+  zero control mean leaves the relative lift undefined (NaN), while the absolute
+  difference and its interval stay valid. A segment whose smaller arm is below a
+  configured minimum keeps its row with the session count and empty estimates, so
+  the report shows that it exists but cannot be judged.
 
 ### Validation against the truth
 

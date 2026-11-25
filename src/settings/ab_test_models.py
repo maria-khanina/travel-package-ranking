@@ -14,6 +14,7 @@ class SegmentSettings(BaseModel):
     children_column: str
     family_label: str
     adults_label: str
+    minimum_sessions: int
 
 
 class AbTestSettings(BaseModel):

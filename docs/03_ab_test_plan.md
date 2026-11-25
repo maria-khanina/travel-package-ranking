@@ -15,7 +15,10 @@ them.
 | `src/ab_test/analysis.py` | `cuped_adjust(metric: FloatArray, covariate: FloatArray) -> CupedResult` | `adjusted`, `theta = cov / var`, `variance_reduction = 1 - var(adjusted) / var(metric)`; the mean is kept |
 | `src/ab_test/power.py` | `required_sessions(standard_deviation: float, effect: float, alpha: float, power: float) -> int` | sessions per arm, `ceil(2 (z_{1-alpha/2} + z_power)^2 sd^2 / effect^2)` |
 | `src/ab_test/validation.py` | `rejection_rate(p_values: FloatArray, alpha: float) -> float`, `coverage_rate(lower: FloatArray, upper: FloatArray, truth: float) -> float` | shares over replications |
-| `src/ab_test/segments.py` | `segment_effects(metric: FloatArray, treated: BoolArray, segments: StringArray, alpha: float) -> pd.DataFrame` | one row per segment: segment, sessions, difference, lower, upper, p-value |
+| `src/ab_test/segments.py` | `segment_effects(metric: FloatArray, treated: BoolArray, segments: TextArray, alpha: float, minimum_sessions: int) -> pd.DataFrame` | one row per segment: segment, sessions, means, difference, lower, upper, p-value; estimates are NaN when the smaller arm of the segment is below `minimum_sessions` |
+
+`compare_arms` raises `ValueError` when an arm has fewer than 2 sessions and returns
+a NaN relative lift when the control mean is zero.
 
 ## Step 0. Tests and settings
 
